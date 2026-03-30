@@ -1,5 +1,8 @@
 import pyparsing as _p
 from netlister import *
+from netlister.netlist import Netlist
+from netlister.subcircuit import Subcircuit as SubcircuitClass
+from netlister.instance import Instance as InstanceClass
 
 def parse_spectre(netlist_string: str):
     # newlines are part of the grammar, thus redifine the whitespaces without it
@@ -16,6 +19,17 @@ def parse_spectre(netlist_string: str):
     cktname = identifier # name of a subcircuit
     cktname_end = _p.Keyword("ends").suppress()
     comment = _p.Suppress("//" + _p.SkipTo(_p.LineEnd()))
+    
+    meta_library = _p.Suppress("//") + _p.Suppress(_p.Literal("Library name:")) + _p.SkipTo(EOL)("library") + EOL
+    meta_cell =    _p.Suppress("//") + _p.Suppress(_p.Literal("Cell name:")) + _p.SkipTo(EOL)("cell") + EOL
+    meta_view =    _p.Suppress("//") + _p.Suppress(_p.Literal("View name:")) + _p.SkipTo(EOL)("view") + EOL
+    subckt_meta =  _p.Optional(meta_library) + _p.Optional(meta_cell) + _p.Optional(meta_view)
+
+    top_meta_library = _p.Suppress("//") + _p.Suppress(_p.Literal("Design library name:")) + _p.SkipTo(EOL)("design_library") + EOL
+    top_meta_cell =    _p.Suppress("//") + _p.Suppress(_p.Literal("Design cell name:")) + _p.SkipTo(EOL)("design_cell") + EOL
+    top_meta_view =    _p.Suppress("//") + _p.Suppress(_p.Literal("Design view name:")) + _p.SkipTo(EOL)("design_view") + EOL
+    design_meta =      top_meta_library | top_meta_cell | top_meta_view
+
     expression = _p.Word(_p.alphanums+'._*+-/()"')
     point_list = _p.Group(_p.Suppress("[") + _p.ZeroOrMore(identifier | number) + _p.Suppress("]"))
     inst_param_key = identifier + _p.Suppress("=")
@@ -27,8 +41,9 @@ def parse_spectre(netlist_string: str):
     instance = _p.Group(instname('name') + _p.Suppress('(') + nets('nets') + _p.Suppress(')') + instref('reference') + parameters + EOL).setResultsName('instance')
     subcircuit_content = _p.Group(_p.OneOrMore(instance | EOL | comment)).setResultsName('subnetlist')
     subcircuit = _p.Group(
+        subckt_meta
         # matches subckt <name> <nets> <newline>
-        _p.Keyword("subckt").suppress() + cktname('name') + nets('nets') + EOL  
+        + _p.Keyword("subckt").suppress() + cktname('name') + nets('nets') + EOL  
         # matches the content of the subcircuit
         + subcircuit_content
         # matches ends <name> <newline>
@@ -75,62 +90,62 @@ def parse_spectre(netlist_string: str):
         + _p.Suppress("options")
         + parameters
         + EOL
-    )
+    ).setResultsName("simopts_declaration")
     
     trancheck_declaration = _p.Group(
         _p.Keyword("tranCheckLimit").suppress()
         + _p.Suppress("checklimit")
         + parameters
         + EOL
-    )
+    ).setResultsName("trancheck_declaration")
     
     tranoptions_declaration = _p.Group(
         _p.Keyword("tran").suppress()
         + _p.Suppress("tran")
         + parameters
         + EOL
-    )
+    ).setResultsName("tranoptions_declaration")
     
     primitives_declaration = _p.Group(
         _p.Keyword("primitives").suppress()
         + _p.Suppress("info")
         + parameters
         + EOL
-    )
+    ).setResultsName("primitives_declaration")
     
     subckts_declaration = _p.Group(
         _p.Keyword("subckts").suppress()
         + _p.Suppress("info")
         + parameters
         + EOL
-    )
+    ).setResultsName("subckts_declaration")
     
     design_declaration = _p.Group(
         _p.Keyword("designParamVals").suppress()
         + _p.Suppress("info")
         + parameters
         + EOL
-    )
+    ).setResultsName("design_declaration")
     
     asserts_declaration = _p.Group(
         _p.Keyword("asserts").suppress()
         + _p.Suppress("info")
         + parameters
         + EOL
-    )
+    ).setResultsName("asserts_declaration")
     
     save_list = _p.Group(
         _p.Keyword("save").suppress()
         + _p.ZeroOrMore(_p.Word(_p.alphanums+'_!\\<>:.'))
         + EOL
-    )
+    ).setResultsName("save_list")
     
     saveopts_declaration = _p.Group(
         _p.Keyword("saveOptions").suppress()
         + _p.Suppress("options")
         + parameters
         + EOL
-    )
+    ).setResultsName("saveopts_declaration")
     
     simulator_options = simulator_declaration | global_declaration | parameters_declaration \
                       | include_declaration | simopts_declaration | trancheck_declaration \
@@ -140,7 +155,7 @@ def parse_spectre(netlist_string: str):
     
     top_level_element = _p.Group(_p.ZeroOrMore(subcircuit_content)).setResultsName('top_level')
     
-    netlist_element = instance | subcircuit | EOL | comment('comment') | simulator_options
+    netlist_element = design_meta | instance | subcircuit | EOL | comment('comment') | simulator_options
     netlist = _p.ZeroOrMore(netlist_element) + _p.StringEnd()
     
     netlist.ignore(linebreak)
@@ -149,7 +164,33 @@ def parse_spectre(netlist_string: str):
     instance.setParseAction(handle_instance)
     subcircuit.setParseAction(handle_subcircuit)
 
-    return netlist.parseString(netlist_string);
+    raw_results = netlist.parseString(netlist_string)
+    
+    nl = Netlist()
+    if "design_library" in raw_results:
+        nl.library = str(raw_results.design_library).strip()
+    if "design_cell" in raw_results:
+        nl.cell = str(raw_results.design_cell).strip()
+    if "design_view" in raw_results:
+        nl.view = str(raw_results.design_view).strip()
+
+    for element in raw_results:
+        if isinstance(element, SubcircuitClass):
+            nl.subcircuits[element.name] = element
+        elif isinstance(element, InstanceClass):
+            nl.top_level_instances.append(element)
+        elif isinstance(element, _p.ParseResults):
+            name = element.getName()
+            if name == "global_declaration":
+                nl.global_nets.extend(list(element[0]))
+            elif name == "include_declaration":
+                nl.includes.append(list(element))
+            elif name in ["simulator_declaration", "simopts_declaration", "trancheck_declaration", "tranoptions_declaration", "saveopts_declaration"]:
+                nl.simulator_options.append({name: list(element)})
+            elif name in ["primitives_declaration", "subckts_declaration", "design_declaration", "asserts_declaration", "save_list"]:
+                nl.analyses.append({name: list(element)})
+
+    return nl
 
 def parse_hspice(netlist_string: str):
     # newlines are part of the grammar, thus redifine the whitespaces without it
@@ -202,7 +243,12 @@ def handle_subcircuit(token):
     nets = sc.nets
     name = sc.name
     instances = sc.subnetlist
-    s = subcircuit.Subcircuit(name, nets, instances)
+    
+    library = str(sc.library).strip() if sc.library else None
+    cell = str(sc.cell).strip() if sc.cell else None
+    view = str(sc.view).strip() if sc.view else None
+    
+    s = SubcircuitClass(name, nets, instances, library=library, cell=cell, view=view)
     return [s]
 
 def handle_instance(token):
@@ -215,6 +261,6 @@ def handle_instance(token):
         pins = inst.instnets[0:-1]
         reference = inst.instnets[-1]
     parameters = inst.parameters
-    i = instance.Instance(name, pins, reference, parameters)
+    i = InstanceClass(name, pins, reference, parameters)
     return [i]
 

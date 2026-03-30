@@ -2,8 +2,11 @@ from netlister.netlist_element import Netlist_Element
 from netlister.net import Net
 
 class Subcircuit(Netlist_Element):
-    def __init__(self, name: str, nets: list, instances: list):
+    def __init__(self, name: str, nets: list, instances: list, library: str = None, cell: str = None, view: str = None):
         self.name = name;
+        self.library = library
+        self.cell = cell
+        self.view = view
         self.labels = {}
         self.power_nets = []
         self.ground_nets = []
@@ -31,7 +34,10 @@ class Subcircuit(Netlist_Element):
         insts = {}
         for i in self.instances:
             insts[i.name] = i.reference
-        return(self.typeof + " " + self.name + "(" + str(self.nets) + "):" + str(insts))
+        meta_str = ""
+        if self.library or self.cell or self.view:
+            meta_str = f" [lib:{self.library} cell:{self.cell} view:{self.view}]"
+        return(self.typeof + " " + self.name + meta_str + "(" + str(self.nets) + "):" + str(insts))
 
     def map_instances(self, mapping_function):
         for i in range(len(self.instances)):

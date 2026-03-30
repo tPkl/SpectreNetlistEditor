@@ -1,1 +1,1 @@
-__all__ = ['netlist_element', 'instance', 'net', 'pin', 'subcircuit', 'device']
+__all__ = ['netlist_element', 'netlist', 'instance', 'net', 'pin', 'subcircuit', 'device']
